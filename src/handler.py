@@ -22,23 +22,27 @@ model, vis_processors, _ = load_model_and_preprocess(
     name="blip_caption", model_type="base_coco", is_eval=True, device=DEVICE
 )
 
-
 def caption_image(job):
     job_input = job["input"]
-    data_urls = job_input.get('data_urls') or [job_input.get('data_url')] if job_input.get('data_url') else None
-    if not data_urls:
-        return {"error": "No data_url or data_urls provided."}
 
-    # Validate known fields (optional min/max now)
+    # Haal data_urls op, of zet data_url om naar lijst
+    data_urls = job_input.get('data_urls')
+    if not data_urls:
+        single_url = job_input.get('data_url')
+        if single_url:
+            data_urls = [single_url]
+        else:
+            return {"error": "At least one of 'data_url' or 'data_urls' is required."}
+
+    # Valideer alleen bekende velden
     schema_input = {k: v for k, v in job_input.items() if k in INPUT_SCHEMA}
-    schema_input['data_url'] = data_urls[0]  # dummy field for schema compliance
-    validated_input = validate(schema_input, INPUT_SCHEMA)
-    if 'errors' in validated_input:
-        return {"error": validated_input['errors']}
-    validated_input = validated_input['validated_input']
+    validated = validate(schema_input, INPUT_SCHEMA)
+    if 'errors' in validated:
+        return {"error": validated['errors']}
+    validated_input = validated['validated_input']
 
     min_len = validated_input.get("min_length", 5)
-    max_len = validated_input.get("max_length", 20)
+    max_len = validated_input.get("max_length", 75)
 
     captions = []
 
@@ -51,18 +55,29 @@ def caption_image(job):
         if is_zip:
             with zipfile.ZipFile(input_path, 'r') as zip_ref:
                 zip_ref.extractall('/tmp')
-            images = [os.path.join('/tmp', f) for f in os.listdir('/tmp') if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            images = [os.path.join('/tmp', f) for f in os.listdir('/tmp')
+                      if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
         else:
             images = [input_path]
 
         for image_path in images:
             if mimetypes.guess_type(image_path)[0] not in ["image/jpeg", "image/png", "image/jpg"]:
                 continue
+
             image = Image.open(image_path).convert("RGB")
             image_tensor = vis_processors["eval"](image).unsqueeze(0).to(DEVICE)
+
             with torch.no_grad():
-                caption = ' '.join(model.generate({"image": image_tensor}, max_length=max_len, min_length=min_len))
-            captions.append({"image_path": image_path, "caption": caption})
+                caption = ' '.join(model.generate(
+                    {"image": image_tensor},
+                    max_length=max_len,
+                    min_length=min_len
+                ))
+
+            captions.append({
+                "image_path": image_path,
+                "caption": caption
+            })
 
     rp_cleanup.clean(['/tmp'])
     return {"captions": captions}
