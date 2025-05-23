@@ -1,6 +1,7 @@
 import os
 import zipfile
 import mimetypes
+import shutil
 
 import torch
 from PIL import Image
@@ -8,7 +9,6 @@ from PIL import Image
 from lavis.models import load_model_and_preprocess
 import runpod
 from runpod.serverless.utils import rp_download, rp_cleanup
-from runpod.serverless.utils.rp_upload import files, upload_file_to_bucket
 from runpod.serverless.utils.rp_validator import validate
 
 from schemas import INPUT_SCHEMA
@@ -22,9 +22,7 @@ model, vis_processors, _ = load_model_and_preprocess(
 )
 
 def caption_image(job):
-    job_input = job["input"]
-
-    # Accept both data_url (single) or data_urls (list)
+    job_input = job.get("input", {})
     data_urls = job_input.get('data_urls')
     if not data_urls:
         single_url = job_input.get('data_url')
@@ -33,13 +31,11 @@ def caption_image(job):
         else:
             return {"error": "At least one of 'data_url' or 'data_urls' is required."}
 
-    # Validate only allowed fields
+    # Validate known fields, ensure schema completeness
     schema_input = {k: v for k, v in job_input.items() if k in INPUT_SCHEMA}
-    # Ensure all required keys from schema exist in schema_input
     for k in INPUT_SCHEMA:
         if k not in schema_input:
             schema_input[k] = None
-
     validated = validate(schema_input, INPUT_SCHEMA)
     if 'errors' in validated:
         return {"error": validated['errors']}
@@ -62,6 +58,7 @@ def caption_image(job):
         images = []
         if is_zip:
             try:
+                shutil.rmtree('/tmp', ignore_errors=True)  # Clean up any leftover zip content
                 with zipfile.ZipFile(input_path, 'r') as zip_ref:
                     zip_ref.extractall('/tmp')
                 images = [os.path.join('/tmp', f) for f in os.listdir('/tmp')
@@ -87,12 +84,15 @@ def caption_image(job):
                         min_length=min_len
                     ))
 
+                print(f"✅ Caption generated for {image_path}: {caption}")
+
                 captions.append({
                     "image_path": image_path,
                     "caption": caption
                 })
 
             except Exception as e:
+                print(f"⚠️ Error processing {image_path}: {str(e)}")
                 captions.append({
                     "image_path": image_path,
                     "caption": f"[ERROR: Failed to process image: {str(e)}]"
