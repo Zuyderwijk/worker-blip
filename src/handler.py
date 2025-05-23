@@ -31,11 +31,14 @@ def caption_image(job):
         else:
             return {"error": "At least one of 'data_url' or 'data_urls' is required."}
 
-    # Validate known fields, ensure schema completeness
+    # Validate only known fields and complete schema keys
     schema_input = {k: v for k, v in job_input.items() if k in INPUT_SCHEMA}
-    for k in INPUT_SCHEMA:
-        if k not in schema_input:
-            schema_input[k] = None
+    for key in INPUT_SCHEMA:
+        if key not in schema_input:
+            schema_input[key] = None
+
+    print("✅ SCHEMA INPUT BEFORE VALIDATE:", schema_input)
+
     validated = validate(schema_input, INPUT_SCHEMA)
     if 'errors' in validated:
         return {"error": validated['errors']}
@@ -58,7 +61,7 @@ def caption_image(job):
         images = []
         if is_zip:
             try:
-                shutil.rmtree('/tmp', ignore_errors=True)  # Clean up any leftover zip content
+                shutil.rmtree('/tmp', ignore_errors=True)
                 with zipfile.ZipFile(input_path, 'r') as zip_ref:
                     zip_ref.extractall('/tmp')
                 images = [os.path.join('/tmp', f) for f in os.listdir('/tmp')
