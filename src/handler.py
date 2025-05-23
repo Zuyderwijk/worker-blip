@@ -81,9 +81,8 @@ def caption_image(job):
 
             zip_file.write(txt_path, txt_filename)
 
-    # Upload the zipped captions to the S3 bucket
-    zip_filename = f"{job['id']}.zip"
-    captions_zip_url = upload_file_to_bucket(zip_filename, zip_output_path)
+    # Instead, return the local path for the response
+    captions_zip_url = zip_output_path
 
     # Cleanup
     rp_cleanup.clean(['/tmp'])
