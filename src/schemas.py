@@ -8,7 +8,11 @@ Contains the schemas for input validation.
 INPUT_SCHEMA = {
     'data_url': {
         'type': str,
-        'required': True
+        'required': False
+    },
+    'data_urls': {
+        'type': list,
+        'required': False
     },
     'max_length': {
         'type': int,
