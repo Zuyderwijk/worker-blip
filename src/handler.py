@@ -44,12 +44,8 @@ def caption_image(job):
         return {"error": validated['errors']}
     validated_input = validated['validated_input']
 
-    min_len = validated_input.get("min_length")
-    if min_len is None:
-        min_len = 5
-    max_len = validated_input.get("max_length")
-    if max_len is None:
-        max_len = 75
+    min_len = 5 if validated_input.get("min_length") is None else validated_input["min_length"]
+    max_len = 75 if validated_input.get("max_length") is None else validated_input["max_length"]
 
     captions = []
 
