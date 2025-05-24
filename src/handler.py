@@ -18,7 +18,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Upgrade naar BLIP2-OPT 2.7B voor gedetailleerdere captions
 model, vis_processors, _ = load_model_and_preprocess(
     name="blip2_opt",
-    model_type="pretrain_opt2.7b",
+    model_type="blip2_t5_flant5xl",
     is_eval=True,
     device=DEVICE
 )
