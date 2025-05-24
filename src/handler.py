@@ -13,12 +13,14 @@ from runpod.serverless.utils.rp_validator import validate
 
 from schemas import INPUT_SCHEMA
 
-# Set up the device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load the BLIP model and preprocessors
+# Upgrade naar BLIP2-OPT 2.7B voor gedetailleerdere captions
 model, vis_processors, _ = load_model_and_preprocess(
-    name="blip_caption", model_type="base_coco", is_eval=True, device=DEVICE
+    name="blip2_opt",
+    model_type="pretrain_opt2.7b",
+    is_eval=True,
+    device=DEVICE
 )
 
 def caption_image(job):
@@ -31,7 +33,6 @@ def caption_image(job):
         else:
             return {"error": "At least one of 'data_url' or 'data_urls' is required."}
 
-    # Validate only known fields and complete schema keys
     schema_input = {k: v for k, v in job_input.items() if k in INPUT_SCHEMA}
     for key in INPUT_SCHEMA:
         if key not in schema_input:
@@ -43,9 +44,6 @@ def caption_image(job):
     if 'errors' in validated:
         return {"error": validated['errors']}
     validated_input = validated['validated_input']
-
-    min_len = 5 if validated_input.get("min_length") is None else validated_input["min_length"]
-    max_len = 75 if validated_input.get("max_length") is None else validated_input["max_length"]
 
     captions = []
 
@@ -81,11 +79,11 @@ def caption_image(job):
                 image_tensor = vis_processors["eval"](image).unsqueeze(0).to(DEVICE)
 
                 with torch.no_grad():
-                    caption = ' '.join(model.generate(
-                        {"image": image_tensor},
-                        max_length=max_len,
-                        min_length=min_len
-                    ))
+                    # Prompt instructie toegevoegd voor rijkere beschrijvingen
+                    caption = model.generate({
+                        "image": image_tensor,
+                        "prompt": "Describe this image in full detail"
+                    })[0]
 
                 print(f"✅ Caption generated for {image_path}: {caption}")
 
