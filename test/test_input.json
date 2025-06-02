@@ -1,5 +1,10 @@
 {
     "input": {
-        "data_url": "https://github.com/runpod-workers/worker-blip/raw/main/test/froggy.zip"
+        "data_url": "https://github.com/runpod-workers/worker-blip/raw/main/test/froggy.zip",
+        "batch_size": 2,
+        "num_beams": 3,
+        "max_length": 40,
+        "min_length": 5,
+        "prompt": "a detailed photo of"
     }
 }

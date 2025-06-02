@@ -1,6 +1,12 @@
 # Required Python packages get listed here, one per line.
-# Reccomended to lock the version number to avoid unexpected changes.
+# Recommended to lock the version number to avoid unexpected changes.
 
-runpod == 0.9.3
-salesforce-lavis == 1.0.2
+runpod==0.9.3
+salesforce-lavis==1.0.2
 numpy<2
+# Performance optimizations
+torch>=2.0.0  # Ensure we have compiled optimizations
+torchvision>=0.15.0
+Pillow-SIMD  # Faster image processing than regular Pillow
+# Memory management
+psutil  # For monitoring memory usage

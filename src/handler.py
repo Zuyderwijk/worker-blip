@@ -2,9 +2,11 @@ import os
 import zipfile
 import mimetypes
 import shutil
+import gc
 
 import torch
 from PIL import Image
+import psutil
 
 from lavis.models import load_model_and_preprocess
 import runpod
@@ -15,13 +17,25 @@ from schemas import INPUT_SCHEMA
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load the model and preprocessors
+# Memory monitoring function
+def log_memory_usage(stage=""):
+    if torch.cuda.is_available():
+        gpu_memory = torch.cuda.memory_allocated() / 1024**3
+        gpu_reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"🔍 {stage} - GPU Memory: {gpu_memory:.2f}GB allocated, {gpu_reserved:.2f}GB reserved")
+    
+    cpu_memory = psutil.virtual_memory().percent
+    print(f"🔍 {stage} - CPU Memory: {cpu_memory:.1f}% used")
+
+# Load the model and preprocessors - using faster, smaller model
+print("🚀 Loading BLIP2 model...")
 model, vis_processors, _ = load_model_and_preprocess(
     name="blip2_opt",
-    model_type="blip2_t5_flant5xl",
+    model_type="caption_coco_opt2.7b",  # Smaller, faster model for better efficiency
     is_eval=True,
     device=DEVICE
 )
+log_memory_usage("Model loaded")
 
 def caption_image(job):
     job_input = job.get("input", {})
@@ -69,36 +83,114 @@ def caption_image(job):
         else:
             images = [input_path]
 
-        for image_path in images:
-            try:
-                mime_type, _ = mimetypes.guess_type(image_path)
-                if mime_type not in ["image/jpeg", "image/png", "image/jpg"]:
+        # Process images in batches for better efficiency
+        batch_size = validated_input.get('batch_size', 4)  # Use configurable batch size
+        for i in range(0, len(images), batch_size):
+            batch_images = images[i:i + batch_size]
+            batch_tensors = []
+            batch_paths = []
+            
+            # Prepare batch
+            for image_path in batch_images:
+                try:
+                    mime_type, _ = mimetypes.guess_type(image_path)
+                    if mime_type not in ["image/jpeg", "image/png", "image/jpg"]:
+                        continue
+
+                    image = Image.open(image_path).convert("RGB")
+                    image_tensor = vis_processors["eval"](image).unsqueeze(0)
+                    batch_tensors.append(image_tensor)
+                    batch_paths.append(image_path)
+                except Exception as e:
+                    print(f"⚠️ Error preparing {image_path}: {str(e)}")
+                    captions.append({
+                        "image_path": image_path,
+                        "caption": f"[ERROR: Failed to process image: {str(e)}]"
+                    })
                     continue
-
-                image = Image.open(image_path).convert("RGB")
-                image_tensor = vis_processors["eval"](image).unsqueeze(0).to(DEVICE)
-
+            
+            if not batch_tensors:
+                continue
+                
+            # Process batch
+            try:
+                batch_tensor = torch.cat(batch_tensors, dim=0).to(DEVICE)
+                
                 with torch.no_grad():
-                    # Prompt instructie toegevoegd voor rijkere beschrijvingen
-                    caption = model.generate({
-                        "image": image_tensor,
-                        "prompt": "Describe this image in full detail"
-                    })[0]
+                    # Use configurable generation parameters
+                    batch_captions = model.generate({
+                        "image": batch_tensor,
+                        "prompt": validated_input.get('prompt', "a photo of"),
+                        "num_beams": validated_input.get('num_beams', 3),
+                        "max_length": validated_input.get('max_length', 50),
+                        "min_length": validated_input.get('min_length', 5),
+                        "repetition_penalty": 1.05
+                    })
 
-                print(f"✅ Caption generated for {image_path}: {caption}")
+                for idx, caption in enumerate(batch_captions):
+                    print(f"✅ Caption generated for {batch_paths[idx]}: {caption}")
+                    captions.append({
+                        "image_path": batch_paths[idx],
+                        "caption": caption
+                    })
+                    
+            except torch.cuda.OutOfMemoryError:
+                # Fallback to individual processing if batch fails
+                print("⚠️ Batch processing failed due to memory, falling back to individual processing")
+                for idx, image_tensor in enumerate(batch_tensors):
+                    try:
+                        with torch.no_grad():
+                            caption = model.generate({
+                                "image": image_tensor.to(DEVICE),
+                                "prompt": validated_input.get('prompt', "a photo of"),
+                                "num_beams": validated_input.get('num_beams', 3),
+                                "max_length": validated_input.get('max_length', 50),
+                                "min_length": validated_input.get('min_length', 5),
+                                "repetition_penalty": 1.05
+                            })[0]
 
-                captions.append({
-                    "image_path": image_path,
-                    "caption": caption
-                })
-
+                        captions.append({
+                            "image_path": batch_paths[idx],
+                            "caption": caption
+                        })
+                    except Exception as e:
+                        print(f"⚠️ Error processing {batch_paths[idx]}: {str(e)}")
+                        captions.append({
+                            "image_path": batch_paths[idx],
+                            "caption": f"[ERROR: Failed to process image: {str(e)}]"
+                        })
             except Exception as e:
-                print(f"⚠️ Error processing {image_path}: {str(e)}")
-                captions.append({
-                    "image_path": image_path,
-                    "caption": f"[ERROR: Failed to process image: {str(e)}]"
-                })
+                print(f"⚠️ Batch processing error: {str(e)}")
+                # Fallback to individual processing
+                for idx, image_tensor in enumerate(batch_tensors):
+                    try:
+                        with torch.no_grad():
+                            caption = model.generate({
+                                "image": image_tensor.to(DEVICE),
+                                "prompt": validated_input.get('prompt', "a photo of"),
+                                "num_beams": validated_input.get('num_beams', 3),
+                                "max_length": validated_input.get('max_length', 50),
+                                "min_length": validated_input.get('min_length', 5),
+                                "repetition_penalty": 1.05
+                            })[0]
 
+                        captions.append({
+                            "image_path": batch_paths[idx],
+                            "caption": caption
+                        })
+                    except Exception as e:
+                        print(f"⚠️ Error processing {batch_paths[idx]}: {str(e)}")
+                        captions.append({
+                            "image_path": batch_paths[idx],
+                            "caption": f"[ERROR: Failed to process image: {str(e)}]"
+                        })
+
+        # Clean up memory after processing
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+    log_memory_usage("After processing")
+    
     rp_cleanup.clean(['/tmp'])
     return {"captions": captions}
 

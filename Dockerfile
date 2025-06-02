@@ -2,9 +2,14 @@ FROM runpod/pytorch:3.10-2.0.0-117
 
 WORKDIR /
 
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONBUFFERED 1
-ENV DEBIAN_FRONTEND noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+# Optimize PyTorch for inference
+ENV TORCH_CUDNN_V8_API_ENABLED=1
+ENV CUDA_LAUNCH_BLOCKING=0
+# Enable memory optimization
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
 # Install system dependencies
 RUN apt-get update && \
@@ -14,10 +19,12 @@ RUN apt-get update && \
     libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies with optimizations
 COPY builder/requirements.txt /requirements.txt
 RUN pip install --upgrade pip && \
-    pip install -r /requirements.txt && \
+    pip install --no-cache-dir -r /requirements.txt && \
+    # Clear pip cache to reduce image size
+    pip cache purge && \
     rm /requirements.txt
 
 # Set the HF_HOME environment variable
