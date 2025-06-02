@@ -23,8 +23,6 @@ RUN apt-get update && \
 COPY builder/requirements.txt /requirements.txt
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r /requirements.txt && \
-    # Clear pip cache to reduce image size
-    pip cache purge && \
     rm /requirements.txt
 
 # Set the HF_HOME environment variable

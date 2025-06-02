@@ -6,7 +6,6 @@ import gc
 
 import torch
 from PIL import Image
-import psutil
 
 from lavis.models import load_model_and_preprocess
 import runpod
@@ -17,15 +16,12 @@ from schemas import INPUT_SCHEMA
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Memory monitoring function
+# Memory monitoring function (GPU only for reliability)
 def log_memory_usage(stage=""):
     if torch.cuda.is_available():
         gpu_memory = torch.cuda.memory_allocated() / 1024**3
         gpu_reserved = torch.cuda.memory_reserved() / 1024**3
         print(f"🔍 {stage} - GPU Memory: {gpu_memory:.2f}GB allocated, {gpu_reserved:.2f}GB reserved")
-    
-    cpu_memory = psutil.virtual_memory().percent
-    print(f"🔍 {stage} - CPU Memory: {cpu_memory:.1f}% used")
 
 # Load the model and preprocessors - using faster, smaller model
 print("🚀 Loading BLIP2 model...")
