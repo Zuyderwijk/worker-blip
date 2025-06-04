@@ -19,11 +19,14 @@ RUN apt-get update && \
     libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies with optimizations
+# Install Python dependencies with fallback strategy
 COPY builder/requirements.txt /requirements.txt
+COPY builder/requirements-minimal.txt /requirements-minimal.txt
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r /requirements.txt && \
-    rm /requirements.txt
+    (pip install --no-cache-dir -r /requirements.txt || \
+     echo "Main requirements failed, trying minimal..." && \
+     pip install --no-cache-dir -r /requirements-minimal.txt) && \
+    rm /requirements.txt /requirements-minimal.txt
 
 # Set the HF_HOME environment variable
 ENV HF_HOME=/huggingface_cache
