@@ -1,6 +1,10 @@
-# Minimal requirements for basic functionality
-# Use this if the full requirements.txt fails
+# Minimal requirements for fallback if full build fails
+# Uses exact versions for maximum compatibility
 
-runpod==0.9.3
+torch==2.0.1
+torchvision==0.15.2
+transformers==4.30.2
+pillow==10.0.0
+runpod==1.0.0
 salesforce-lavis==1.0.2
-numpy<2
+numpy==1.24.4

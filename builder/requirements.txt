@@ -1,7 +1,22 @@
-# Required Python packages get listed here, one per line.
-# Recommended to lock the version number to avoid unexpected changes.
+# Required Python packages for optimized BLIP2 handler
+# Locked versions for stability and compatibility
 
-runpod==0.9.3
-# Use a more stable version of LAVIS
+# Core ML dependencies  
+torch>=2.0.0,<2.3.0
+torchvision>=0.15.0,<0.18.0
+transformers>=4.30.0,<5.0.0
+
+# Image processing
+pillow>=9.0.0,<11.0.0
+
+# RunPod serverless
+runpod>=1.0.0,<2.0.0
+
+# LAVIS for BLIP2 - using stable version
 salesforce-lavis>=1.0.0,<2.0.0
+
+# NumPy compatibility fix for LAVIS
 numpy<2
+
+# Optional performance dependencies
+opencv-python-headless>=4.8.0,<5.0.0

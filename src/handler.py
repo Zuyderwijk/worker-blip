@@ -1,193 +1,303 @@
 import os
-import zipfile
 import mimetypes
-import shutil
 import gc
+import time
+from typing import Dict, Any, Optional
 
 import torch
 from PIL import Image
-
-from lavis.models import load_model_and_preprocess
 import runpod
 from runpod.serverless.utils import rp_download, rp_cleanup
 from runpod.serverless.utils.rp_validator import validate
 
-from schemas import INPUT_SCHEMA
+from lavis.models import load_model_and_preprocess
 
+# Optimized input schema for single image processing
+INPUT_SCHEMA = {
+    'data_url': {
+        'type': str,
+        'required': True,
+        'description': 'Base64 encoded image data URL (data:image/...;base64,...)'
+    },
+    'prompt': {
+        'type': str,
+        'required': False,
+        'default': 'a photo of',
+        'description': 'Caption generation prompt'
+    },
+    'max_length': {
+        'type': int,
+        'required': False,
+        'default': 40,
+        'description': 'Maximum caption length (optimized for speed)'
+    },
+    'min_length': {
+        'type': int,
+        'required': False,
+        'default': 8,
+        'description': 'Minimum caption length'
+    },
+    'num_beams': {
+        'type': int,
+        'required': False,
+        'default': 3,
+        'description': 'Number of beams for beam search (max 3 for speed)'
+    }
+}
+
+# Use faster, more efficient device detection
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"🔧 Using device: {DEVICE}")
 
-# Memory monitoring function (GPU only for reliability)
-def log_memory_usage(stage=""):
+# Memory monitoring (simplified for speed)
+def log_memory_usage(stage: str = "") -> None:
+    """Log GPU memory usage if available"""
     if torch.cuda.is_available():
-        gpu_memory = torch.cuda.memory_allocated() / 1024**3
-        gpu_reserved = torch.cuda.memory_reserved() / 1024**3
-        print(f"🔍 {stage} - GPU Memory: {gpu_memory:.2f}GB allocated, {gpu_reserved:.2f}GB reserved")
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"🔍 {stage} - GPU: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
-# Load the model and preprocessors - using faster, smaller model
-print("🚀 Loading BLIP2 model...")
-model, vis_processors, _ = load_model_and_preprocess(
-    name="blip2_opt",
-    model_type="caption_coco_opt2.7b",  # Smaller, faster model for better efficiency
-    is_eval=True,
-    device=DEVICE
-)
-log_memory_usage("Model loaded")
+# Load optimized model for single image processing
+print("🚀 Loading optimized BLIP2 model...")
+start_time = time.time()
 
-def caption_image(job):
-    job_input = job.get("input", {})
-    data_urls = job_input.get('data_urls')
-    if not data_urls:
-        single_url = job_input.get('data_url')
-        if single_url:
-            data_urls = [single_url]
-        else:
-            return {"error": "At least one of 'data_url' or 'data_urls' is required."}
-
-    schema_input = {k: v for k, v in job_input.items() if k in INPUT_SCHEMA}
-    for key in INPUT_SCHEMA:
-        if key not in schema_input:
-            schema_input[key] = None
-
-    print("✅ SCHEMA INPUT BEFORE VALIDATE:", schema_input)
-
-    validated = validate(schema_input, INPUT_SCHEMA)
-    if 'errors' in validated:
-        return {"error": validated['errors']}
-    validated_input = validated['validated_input']
-
-    captions = []
-
-    for url in data_urls:
-        try:
-            input_path_data = rp_download.file(url)
-            input_path = input_path_data["file_path"]
-            mime_type, _ = mimetypes.guess_type(input_path)
-            is_zip = mime_type == "application/zip"
-        except Exception as e:
-            return {"error": f"Failed to download or inspect file from URL: {url}. Error: {str(e)}"}
-
-        images = []
-        if is_zip:
-            try:
-                shutil.rmtree('/tmp', ignore_errors=True)
-                with zipfile.ZipFile(input_path, 'r') as zip_ref:
-                    zip_ref.extractall('/tmp')
-                images = [os.path.join('/tmp', f) for f in os.listdir('/tmp')
-                          if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-            except Exception as e:
-                return {"error": f"Failed to unzip archive: {url}. Error: {str(e)}"}
-        else:
-            images = [input_path]
-
-        # Process images in batches for better efficiency
-        batch_size = validated_input.get('batch_size', 4)  # Use configurable batch size
-        for i in range(0, len(images), batch_size):
-            batch_images = images[i:i + batch_size]
-            batch_tensors = []
-            batch_paths = []
-            
-            # Prepare batch
-            for image_path in batch_images:
-                try:
-                    mime_type, _ = mimetypes.guess_type(image_path)
-                    if mime_type not in ["image/jpeg", "image/png", "image/jpg"]:
-                        continue
-
-                    image = Image.open(image_path).convert("RGB")
-                    image_tensor = vis_processors["eval"](image).unsqueeze(0)
-                    batch_tensors.append(image_tensor)
-                    batch_paths.append(image_path)
-                except Exception as e:
-                    print(f"⚠️ Error preparing {image_path}: {str(e)}")
-                    captions.append({
-                        "image_path": image_path,
-                        "caption": f"[ERROR: Failed to process image: {str(e)}]"
-                    })
-                    continue
-            
-            if not batch_tensors:
-                continue
-                
-            # Process batch
-            try:
-                batch_tensor = torch.cat(batch_tensors, dim=0).to(DEVICE)
-                
-                with torch.no_grad():
-                    # Use configurable generation parameters
-                    batch_captions = model.generate({
-                        "image": batch_tensor,
-                        "prompt": validated_input.get('prompt', "a photo of"),
-                        "num_beams": validated_input.get('num_beams', 3),
-                        "max_length": validated_input.get('max_length', 50),
-                        "min_length": validated_input.get('min_length', 5),
-                        "repetition_penalty": 1.05
-                    })
-
-                for idx, caption in enumerate(batch_captions):
-                    print(f"✅ Caption generated for {batch_paths[idx]}: {caption}")
-                    captions.append({
-                        "image_path": batch_paths[idx],
-                        "caption": caption
-                    })
-                    
-            except torch.cuda.OutOfMemoryError:
-                # Fallback to individual processing if batch fails
-                print("⚠️ Batch processing failed due to memory, falling back to individual processing")
-                for idx, image_tensor in enumerate(batch_tensors):
-                    try:
-                        with torch.no_grad():
-                            caption = model.generate({
-                                "image": image_tensor.to(DEVICE),
-                                "prompt": validated_input.get('prompt', "a photo of"),
-                                "num_beams": validated_input.get('num_beams', 3),
-                                "max_length": validated_input.get('max_length', 50),
-                                "min_length": validated_input.get('min_length', 5),
-                                "repetition_penalty": 1.05
-                            })[0]
-
-                        captions.append({
-                            "image_path": batch_paths[idx],
-                            "caption": caption
-                        })
-                    except Exception as e:
-                        print(f"⚠️ Error processing {batch_paths[idx]}: {str(e)}")
-                        captions.append({
-                            "image_path": batch_paths[idx],
-                            "caption": f"[ERROR: Failed to process image: {str(e)}]"
-                        })
-            except Exception as e:
-                print(f"⚠️ Batch processing error: {str(e)}")
-                # Fallback to individual processing
-                for idx, image_tensor in enumerate(batch_tensors):
-                    try:
-                        with torch.no_grad():
-                            caption = model.generate({
-                                "image": image_tensor.to(DEVICE),
-                                "prompt": validated_input.get('prompt', "a photo of"),
-                                "num_beams": validated_input.get('num_beams', 3),
-                                "max_length": validated_input.get('max_length', 50),
-                                "min_length": validated_input.get('min_length', 5),
-                                "repetition_penalty": 1.05
-                            })[0]
-
-                        captions.append({
-                            "image_path": batch_paths[idx],
-                            "caption": caption
-                        })
-                    except Exception as e:
-                        print(f"⚠️ Error processing {batch_paths[idx]}: {str(e)}")
-                        captions.append({
-                            "image_path": batch_paths[idx],
-                            "caption": f"[ERROR: Failed to process image: {str(e)}]"
-                        })
-
-        # Clean up memory after processing
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    gc.collect()
-    log_memory_usage("After processing")
+try:
+    # Use the smallest, fastest BLIP2 variant for production
+    model, vis_processors, _ = load_model_and_preprocess(
+        name="blip2_opt",
+        model_type="caption_coco_opt2.7b",  # Much faster and smaller model
+        is_eval=True,
+        device=DEVICE
+    )
     
-    rp_cleanup.clean(['/tmp'])
-    return {"captions": captions}
+    # Optimize model for inference
+    model.eval()
+    if hasattr(model, 'half') and DEVICE.type == 'cuda':
+        model = model.half()  # Use FP16 for faster inference
+    
+    load_time = time.time() - start_time
+    print(f"✅ Model loaded and optimized in {load_time:.2f} seconds")
+    log_memory_usage("Model loaded")
+    
+except Exception as e:
+    print(f"❌ Failed to load model: {str(e)}")
+    raise
 
-runpod.serverless.start({"handler": caption_image})
+def health_check() -> Dict[str, Any]:
+    """Optimized health check"""
+    try:
+        return {
+            "status": "healthy",
+            "device": str(DEVICE),
+            "cuda_available": torch.cuda.is_available(),
+            "model_loaded": model is not None,
+            "timestamp": time.time(),
+            "gpu_memory_gb": torch.cuda.memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+        }
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
+def process_single_image(job: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Optimized single image processing function
+    
+    Expected input format:
+    {
+        "input": {
+            "data_url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...",
+            "prompt": "a photo of",
+            "max_length": 40,
+            "min_length": 8,
+            "num_beams": 3
+        }
+    }
+    """
+    process_start = time.time()
+    
+    try:
+        print(f"🚀 Processing job at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Validate input
+        job_input = job.get("input", {})
+        if not job_input:
+            return {"error": "No input provided"}
+        
+        # Validate against schema
+        validated = validate(job_input, INPUT_SCHEMA)
+        if 'errors' in validated:
+            print(f"❌ Validation errors: {validated['errors']}")
+            return {"error": f"Validation failed: {validated['errors']}"}
+        
+        params = validated['validated_input']
+        data_url = params['data_url']
+        
+        if not data_url or not data_url.startswith('data:image/'):
+            return {"error": "Invalid data_url format. Expected: data:image/...;base64,..."}
+        
+        print(f"📥 Processing single image with params: max_length={params['max_length']}, num_beams={params['num_beams']}")
+        
+        # Download and process image
+        download_start = time.time()
+        try:
+            input_path_data = rp_download.file(data_url)
+            input_path = input_path_data["file_path"]
+            download_time = time.time() - download_start
+            print(f"⬇️ Downloaded in {download_time:.3f}s: {input_path}")
+        except Exception as e:
+            error_msg = f"Failed to download/decode image: {str(e)}"
+            print(f"❌ {error_msg}")
+            return {"error": error_msg}
+        
+        # Validate file type
+        mime_type, _ = mimetypes.guess_type(input_path)
+        if mime_type not in ["image/jpeg", "image/png", "image/jpg"]:
+            error_msg = f"Unsupported image format: {mime_type}"
+            print(f"❌ {error_msg}")
+            return {"error": error_msg}
+        
+        # Process image
+        try:
+            # Load and preprocess image
+            prep_start = time.time()
+            image = Image.open(input_path).convert("RGB")
+            
+            # Resize large images for faster processing
+            max_size = 512
+            if max(image.size) > max_size:
+                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                print(f"🔄 Resized image to {image.size} for faster processing")
+            
+            image_tensor = vis_processors["eval"](image).unsqueeze(0).to(DEVICE)
+            prep_time = time.time() - prep_start
+            print(f"🖼️ Image preprocessed in {prep_time:.3f}s")
+            
+            # Generate caption with optimized parameters
+            gen_start = time.time()
+            with torch.no_grad():
+                # Clamp parameters for optimal performance
+                max_length = min(params['max_length'], 50)  # Cap at 50 for speed
+                num_beams = min(params['num_beams'], 3)     # Max 3 beams for speed
+                
+                caption = model.generate({
+                    "image": image_tensor,
+                    "prompt": params['prompt'],
+                    "num_beams": num_beams,
+                    "max_length": max_length,
+                    "min_length": params['min_length'],
+                    "repetition_penalty": 1.05,
+                    "do_sample": False,  # Deterministic for consistency
+                    "early_stopping": True  # Stop when EOS is generated
+                })[0]
+                
+            gen_time = time.time() - gen_start
+            print(f"🧠 Generated caption in {gen_time:.3f}s: '{caption}'")
+            
+            # Clear GPU cache immediately
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            process_time = time.time() - process_start
+            print(f"✅ Total processing time: {process_time:.3f}s")
+            
+            return {
+                "caption": caption,
+                "processing_time": process_time,
+                "model_info": {
+                    "device": str(DEVICE),
+                    "max_length": max_length,
+                    "num_beams": num_beams
+                }
+            }
+            
+        except Exception as e:
+            error_msg = f"Caption generation failed: {str(e)}"
+            print(f"❌ {error_msg}")
+            return {"error": error_msg}
+            
+    except Exception as e:
+        error_msg = f"Unexpected error: {str(e)}"
+        print(f"❌ {error_msg}")
+        return {"error": error_msg}
+        
+    finally:
+        # Always cleanup
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            rp_cleanup.clean(['/tmp'])
+            log_memory_usage("After cleanup")
+        except Exception as cleanup_error:
+            print(f"⚠️ Cleanup warning: {cleanup_error}")
+
+def caption_image_legacy(job: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Legacy handler for backward compatibility with batch processing
+    Converts batch requests to single image format
+    """
+    try:
+        job_input = job.get("input", {})
+        
+        # Handle legacy batch format
+        if 'data_urls' in job_input:
+            data_urls = job_input['data_urls']
+            if not data_urls:
+                return {"error": "Empty data_urls array"}
+            
+            print(f"🔄 Legacy batch mode: processing {len(data_urls)} images sequentially")
+            
+            captions = []
+            for i, data_url in enumerate(data_urls):
+                print(f"📸 Processing image {i+1}/{len(data_urls)}")
+                
+                # Create single image job
+                single_job = {
+                    "input": {
+                        "data_url": data_url,
+                        "prompt": job_input.get('prompt', 'a photo of'),
+                        "max_length": job_input.get('max_length', 40),
+                        "min_length": job_input.get('min_length', 8),
+                        "num_beams": job_input.get('num_beams', 3)
+                    }
+                }
+                
+                result = process_single_image(single_job)
+                
+                if 'error' in result:
+                    captions.append({
+                        "image_path": f"image_{i+1}",
+                        "caption": f"[ERROR: {result['error']}]"
+                    })
+                else:
+                    captions.append({
+                        "image_path": f"image_{i+1}",
+                        "caption": result['caption']
+                    })
+            
+            return {"captions": captions}
+        
+        # Single image processing (preferred)
+        else:
+            result = process_single_image(job)
+            if 'error' in result:
+                return result
+            
+            # Convert to legacy format for compatibility
+            return {
+                "captions": [{
+                    "image_path": "single_image",
+                    "caption": result['caption']
+                }]
+            }
+            
+    except Exception as e:
+        return {"error": f"Legacy handler error: {str(e)}"}
+
+# Register the optimized handler
+print("🔧 Registering optimized single-image handler...")
+runpod.serverless.start({
+    "handler": process_single_image,  # Primary optimized handler
+    "health_check": health_check
+})
+
+print("✅ RunPod serverless handler ready for optimized single-image processing!")

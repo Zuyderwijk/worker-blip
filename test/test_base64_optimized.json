@@ -1,0 +1,9 @@
+{
+  "input": {
+    "data_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+    "prompt": "a photo of",
+    "max_length": 30,
+    "min_length": 5,
+    "num_beams": 2
+  }
+}
