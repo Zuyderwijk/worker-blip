@@ -18,5 +18,5 @@ salesforce-lavis>=1.0.0,<2.0.0
 # NumPy compatibility fix for LAVIS
 numpy<2
 
-# OpenCV - using exact version required by LAVIS
-opencv-python-headless==4.5.5.64
+# Optional performance dependencies
+opencv-python-headless>=4.8.0,<5.0.0
