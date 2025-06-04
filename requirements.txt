@@ -2,8 +2,8 @@
 # This file is for local development - Docker uses builder/requirements.txt
 
 # Core ML dependencies  
-torch>=2.0.0,<2.3.0
-torchvision>=0.15.0,<0.18.0
+torch==2.0.1              # Compatible with lavis
+torchvision==0.15.2
 transformers>=4.30.0,<5.0.0
 
 # Image processing
@@ -12,11 +12,11 @@ pillow>=9.0.0,<11.0.0
 # RunPod serverless
 runpod>=1.0.0,<2.0.0
 
-# LAVIS for BLIP2 - using PyPI version for stability
-salesforce-lavis>=1.0.0,<2.0.0
+# LAVIS for BLIP2
+salesforce-lavis==1.0.2   # Only stable version with PyPI support
+
+# Explicitly match LAVIS dependency
+opencv-python-headless==4.5.5.64
 
 # NumPy compatibility fix
 numpy<2
-
-# Optional performance dependencies
-opencv-python-headless>=4.8.0,<5.0.0
