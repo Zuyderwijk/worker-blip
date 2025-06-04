@@ -4,7 +4,7 @@
 # Core ML dependencies  
 torch==2.0.1              # Compatible with lavis
 torchvision==0.15.2
-transformers>=4.30.0,<5.0.0
+transformers>=4.25.0,<4.27  # Compatible with salesforce-lavis
 
 # Image processing
 pillow>=9.0.0,<11.0.0

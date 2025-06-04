@@ -1,22 +1,22 @@
 # Required Python packages for optimized BLIP2 handler
-# Locked versions for stability and compatibility
+# Locked versions for maximum compatibility with salesforce-lavis
 
-# Core ML dependencies  
-torch==2.0.1                 # Verified compatible with lavis
-torchvision==0.15.2
-transformers==4.38.2         # Compatible with BLIP2 and lavis
+# Core ML dependencies - match PyTorch base image
+torch>=2.0.0,<2.3.0          # Compatible with base image and lavis
+torchvision>=0.15.0,<0.18.0  # Compatible with torch version
+transformers>=4.25.0,<4.27   # Required by salesforce-lavis 1.0.2
 
 # Image processing
-pillow==10.1.0
+pillow>=9.0.0,<11.0.0
 
 # RunPod serverless
 runpod>=1.0.0,<2.0.0
 
-# LAVIS for BLIP2 - stable PyPI version
+# LAVIS for BLIP2 - only stable PyPI version
 salesforce-lavis==1.0.2
 
-# NumPy compatibility fix for LAVIS
-numpy<2
+# NumPy compatibility (lavis requires <2.0)
+numpy>=1.21.0,<2.0
 
-# Explicit LAVIS dependency
+# OpenCV - exact version required by salesforce-lavis
 opencv-python-headless==4.5.5.64
