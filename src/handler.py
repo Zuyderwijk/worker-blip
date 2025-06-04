@@ -131,8 +131,8 @@ def process_single_image(job: Dict[str, Any]) -> Dict[str, Any]:
         params = validated['validated_input']
         data_url = params['data_url']
         
-        if not data_url or not data_url.startswith('data:image/'):
-            return {"error": "Invalid data_url format. Expected: data:image/...;base64,..."}
+        if not data_url or not (data_url.startswith('data:image/') or data_url.startswith('http')):
+            return {"error": "Invalid data_url format. Expected: data:image/...;base64,... or http(s)://..."}
         
         print(f"📥 Processing single image with params: max_length={params['max_length']}, num_beams={params['num_beams']}")
         
