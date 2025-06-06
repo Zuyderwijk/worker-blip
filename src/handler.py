@@ -2,7 +2,7 @@ import os
 import mimetypes
 import gc
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import torch
 from PIL import Image
@@ -12,36 +12,42 @@ from runpod.serverless.utils.rp_validator import validate
 
 from lavis.models import load_model_and_preprocess
 
-# Optimized input schema for single image processing
+# Enhanced input schema for personalized image processing
 INPUT_SCHEMA = {
     'data_url': {
         'type': str,
         'required': True,
-        'description': 'Base64 encoded image data URL (data:image/...;base64,...)'
+        'description': 'Base64 encoded image data URL (data:image/...;base64,...) or HTTP URL'
     },
     'prompt': {
         'type': str,
         'required': False,
         'default': 'a photo of',
-        'description': 'Caption generation prompt'
+        'description': 'Caption generation prompt (can include tagged people names)'
+    },
+    'tags': {
+        'type': list,
+        'required': False,
+        'default': [],
+        'description': 'List of tagged people/objects: [{"name": "Hanna", "role": "daughter"}, ...]'
     },
     'max_length': {
         'type': int,
         'required': False,
-        'default': 40,
-        'description': 'Maximum caption length (optimized for speed)'
+        'default': 80,
+        'description': 'Maximum caption length for detailed personalized descriptions'
     },
     'min_length': {
         'type': int,
         'required': False,
-        'default': 8,
-        'description': 'Minimum caption length'
+        'default': 15,
+        'description': 'Minimum caption length for good detail'
     },
     'num_beams': {
         'type': int,
         'required': False,
-        'default': 3,
-        'description': 'Number of beams for beam search (max 3 for speed)'
+        'default': 5,
+        'description': 'Number of beams for beam search (higher for better quality)'
     }
 }
 
@@ -57,15 +63,15 @@ def log_memory_usage(stage: str = "") -> None:
         reserved = torch.cuda.memory_reserved() / 1024**3
         print(f"🔍 {stage} - GPU: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
-# Load optimized model for single image processing
-print("🚀 Loading optimized BLIP2 model...")
+# Load optimized model for personalized image processing
+print("🚀 Loading optimized BLIP2 model for personalized captions...")
 start_time = time.time()
 
 try:
     # Use the smallest, fastest BLIP2 variant for production
     model, vis_processors, _ = load_model_and_preprocess(
         name="blip2_opt",
-        model_type="caption_coco_opt2.7b",  # Much faster and smaller model
+        model_type="caption_coco_opt2.7b",  # Good balance of speed and quality
         is_eval=True,
         device=DEVICE
     )
@@ -83,8 +89,97 @@ except Exception as e:
     print(f"❌ Failed to load model: {str(e)}")
     raise
 
+def create_personalized_prompt(base_prompt: str, tags: List[Dict[str, str]]) -> str:
+    """
+    Create a personalized prompt that incorporates tagged people/objects
+    to encourage the AI to use their names in the caption
+    """
+    if not tags:
+        return base_prompt
+    
+    # Extract people with names
+    people = []
+    for tag in tags:
+        name = tag.get('name', '')
+        role = tag.get('role', '')
+        if name:
+            if role:
+                people.append(f"{name} ({role})")
+            else:
+                people.append(name)
+    
+    if not people:
+        return base_prompt
+    
+    # Create enhanced prompts that encourage using the names
+    people_str = ', '.join(people)
+    
+    # Enhanced prompts for better personalization
+    enhanced_prompts = [
+        f"detailed photo of {people_str}",
+        f"photo showing {people_str}",
+        f"{people_str} in a detailed photo",
+        f"detailed scene with {people_str}"
+    ]
+    
+    # Use the first enhanced prompt for consistency
+    enhanced_prompt = enhanced_prompts[0]
+    
+    print(f"🏷️ Enhanced prompt with tags: '{enhanced_prompt}'")
+    return enhanced_prompt
+
+def post_process_caption_with_tags(caption: str, tags: List[Dict[str, str]]) -> str:
+    """
+    Post-process the caption to ensure tagged names are properly included
+    and enhance the description for children's book context
+    """
+    if not tags or not caption:
+        return caption
+    
+    # Extract names from tags
+    names = [tag.get('name', '') for tag in tags if tag.get('name')]
+    if not names:
+        return caption
+    
+    processed_caption = caption
+    
+    # If the caption doesn't contain any of the tagged names, try to incorporate them
+    caption_lower = caption.lower()
+    names_in_caption = [name for name in names if name.lower() in caption_lower]
+    
+    if not names_in_caption:
+        # Try to replace generic terms with specific names
+        replacements = {
+            'a person': names[0] if len(names) == 1 else names[0],
+            'a man': next((tag['name'] for tag in tags if tag.get('role') in ['father', 'dad', 'papa', 'man']), names[0]),
+            'a woman': next((tag['name'] for tag in tags if tag.get('role') in ['mother', 'mom', 'mama', 'woman']), names[0]),
+            'a boy': next((tag['name'] for tag in tags if tag.get('role') in ['son', 'boy', 'child']), names[0]),
+            'a girl': next((tag['name'] for tag in tags if tag.get('role') in ['daughter', 'girl', 'child']), names[0]),
+            'a child': names[0],
+            'someone': names[0],
+            'they': names[0] if len(names) == 1 else f"{names[0]} and {names[1]}" if len(names) == 2 else f"{', '.join(names[:-1])} and {names[-1]}",
+        }
+        
+        for generic_term, specific_name in replacements.items():
+            if generic_term in caption_lower:
+                # Replace first occurrence, maintaining original capitalization
+                idx = caption_lower.find(generic_term)
+                if idx != -1:
+                    processed_caption = caption[:idx] + specific_name + caption[idx + len(generic_term):]
+                    break
+    
+    # Enhance for children's book context
+    if processed_caption and not any(phrase in processed_caption.lower() for phrase in ['little', 'sweet', 'cute', 'lovely']):
+        # Add a gentle adjective before names when appropriate
+        for name in names:
+            if name in processed_caption:
+                processed_caption = processed_caption.replace(name, f"little {name}", 1)
+                break
+    
+    return processed_caption
+
 def health_check() -> Dict[str, Any]:
-    """Optimized health check"""
+    """Enhanced health check"""
     try:
         return {
             "status": "healthy",
@@ -92,30 +187,32 @@ def health_check() -> Dict[str, Any]:
             "cuda_available": torch.cuda.is_available(),
             "model_loaded": model is not None,
             "timestamp": time.time(),
-            "gpu_memory_gb": torch.cuda.memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+            "gpu_memory_gb": torch.cuda.memory_allocated() / 1024**3 if torch.cuda.is_available() else 0,
+            "features": ["personalized_captions", "tag_integration", "children_book_context"]
         }
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
 
 def process_single_image(job: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Optimized single image processing function
+    Enhanced single image processing function with personalized captions
     
     Expected input format:
     {
         "input": {
-            "data_url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...",
-            "prompt": "a photo of",
-            "max_length": 40,
-            "min_length": 8,
-            "num_beams": 3
+            "data_url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ..." or "https://...",
+            "prompt": "detailed photo showing",
+            "tags": [{"name": "Hanna", "role": "daughter"}, {"name": "Puck", "role": "son"}],
+            "max_length": 80,
+            "min_length": 15,
+            "num_beams": 5
         }
     }
     """
     process_start = time.time()
     
     try:
-        print(f"🚀 Processing job at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🚀 Processing personalized job at {time.strftime('%Y-%m-%d %H:%M:%S')}")
         
         # Validate input
         job_input = job.get("input", {})
@@ -130,11 +227,14 @@ def process_single_image(job: Dict[str, Any]) -> Dict[str, Any]:
         
         params = validated['validated_input']
         data_url = params['data_url']
+        tags = params.get('tags', [])
         
         if not data_url or not (data_url.startswith('data:image/') or data_url.startswith('http')):
             return {"error": "Invalid data_url format. Expected: data:image/...;base64,... or http(s)://..."}
         
-        print(f"📥 Processing single image with params: max_length={params['max_length']}, num_beams={params['num_beams']}")
+        print(f"📥 Processing single image with personalized params:")
+        print(f"   - max_length: {params['max_length']}, num_beams: {params['num_beams']}")
+        print(f"   - tags: {tags}")
         
         # Download and process image
         download_start = time.time()
@@ -161,36 +261,47 @@ def process_single_image(job: Dict[str, Any]) -> Dict[str, Any]:
             prep_start = time.time()
             image = Image.open(input_path).convert("RGB")
             
-            # Resize large images for faster processing
-            max_size = 512
+            # Resize large images for faster processing (but allow larger sizes for better detail)
+            max_size = 768  # Increased for better detail in personalized captions
             if max(image.size) > max_size:
                 image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-                print(f"🔄 Resized image to {image.size} for faster processing")
+                print(f"🔄 Resized image to {image.size} for optimal processing")
             
             image_tensor = vis_processors["eval"](image).unsqueeze(0).to(DEVICE)
             prep_time = time.time() - prep_start
             print(f"🖼️ Image preprocessed in {prep_time:.3f}s")
             
-            # Generate caption with optimized parameters
+            # Create personalized prompt
+            original_prompt = params['prompt']
+            personalized_prompt = create_personalized_prompt(original_prompt, tags)
+            
+            # Generate caption with personalized parameters
             gen_start = time.time()
             with torch.no_grad():
-                # Clamp parameters for optimal performance
-                max_length = min(params['max_length'], 50)  # Cap at 50 for speed
-                num_beams = min(params['num_beams'], 3)     # Max 3 beams for speed
+                # Enhanced parameters for better personalized descriptions
+                max_length = min(params['max_length'], 100)  # Allow longer for detailed stories
+                num_beams = min(params['num_beams'], 8)      # Higher quality for personalization
                 
                 caption = model.generate({
                     "image": image_tensor,
-                    "prompt": params['prompt'],
+                    "prompt": personalized_prompt,
                     "num_beams": num_beams,
                     "max_length": max_length,
                     "min_length": params['min_length'],
-                    "repetition_penalty": 1.05,
-                    "do_sample": False,  # Deterministic for consistency
-                    "early_stopping": True  # Stop when EOS is generated
+                    "repetition_penalty": 1.2,   # Higher to avoid repetition with names
+                    "do_sample": False,          # Deterministic for consistency
+                    "early_stopping": True,      # Stop when EOS is generated
+                    "length_penalty": 1.0        # Neutral length preference
                 })[0]
                 
             gen_time = time.time() - gen_start
-            print(f"🧠 Generated caption in {gen_time:.3f}s: '{caption}'")
+            print(f"🧠 Generated raw caption in {gen_time:.3f}s: '{caption}'")
+            
+            # Post-process caption with tag integration
+            processed_caption = post_process_caption_with_tags(caption, tags)
+            
+            if processed_caption != caption:
+                print(f"✨ Enhanced caption with tags: '{processed_caption}'")
             
             # Clear GPU cache immediately
             if torch.cuda.is_available():
@@ -200,8 +311,14 @@ def process_single_image(job: Dict[str, Any]) -> Dict[str, Any]:
             print(f"✅ Total processing time: {process_time:.3f}s")
             
             return {
-                "caption": caption,
+                "caption": processed_caption,
+                "raw_caption": caption,  # Keep original for debugging
                 "processing_time": process_time,
+                "personalization_info": {
+                    "tags_used": tags,
+                    "enhanced_prompt": personalized_prompt,
+                    "post_processed": processed_caption != caption
+                },
                 "model_info": {
                     "device": str(DEVICE),
                     "max_length": max_length,
@@ -233,7 +350,7 @@ def process_single_image(job: Dict[str, Any]) -> Dict[str, Any]:
 def caption_image_legacy(job: Dict[str, Any]) -> Dict[str, Any]:
     """
     Legacy handler for backward compatibility with batch processing
-    Converts batch requests to single image format
+    Converts batch requests to single image format with personalization support
     """
     try:
         job_input = job.get("input", {})
@@ -246,18 +363,25 @@ def caption_image_legacy(job: Dict[str, Any]) -> Dict[str, Any]:
             
             print(f"🔄 Legacy batch mode: processing {len(data_urls)} images sequentially")
             
+            # Handle tags for batch processing
+            batch_tags = job_input.get('tags', [])
+            
             captions = []
             for i, data_url in enumerate(data_urls):
                 print(f"📸 Processing image {i+1}/{len(data_urls)}")
+                
+                # Get tags for this specific image
+                image_tags = batch_tags[i] if i < len(batch_tags) else []
                 
                 # Create single image job
                 single_job = {
                     "input": {
                         "data_url": data_url,
-                        "prompt": job_input.get('prompt', 'a photo of'),
-                        "max_length": job_input.get('max_length', 40),
-                        "min_length": job_input.get('min_length', 8),
-                        "num_beams": job_input.get('num_beams', 3)
+                        "prompt": job_input.get('prompt', 'detailed photo showing'),
+                        "tags": image_tags,
+                        "max_length": job_input.get('max_length', 80),
+                        "min_length": job_input.get('min_length', 15),
+                        "num_beams": job_input.get('num_beams', 5)
                     }
                 }
                 
@@ -271,7 +395,8 @@ def caption_image_legacy(job: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     captions.append({
                         "image_path": f"image_{i+1}",
-                        "caption": result['caption']
+                        "caption": result['caption'],
+                        "personalization_info": result.get('personalization_info', {})
                     })
             
             return {"captions": captions}
@@ -286,18 +411,20 @@ def caption_image_legacy(job: Dict[str, Any]) -> Dict[str, Any]:
             return {
                 "captions": [{
                     "image_path": "single_image",
-                    "caption": result['caption']
+                    "caption": result['caption'],
+                    "personalization_info": result.get('personalization_info', {})
                 }]
             }
             
     except Exception as e:
         return {"error": f"Legacy handler error: {str(e)}"}
 
-# Register the optimized handler
-print("🔧 Registering optimized single-image handler...")
+# Register the enhanced handler
+print("🔧 Registering enhanced personalized handler...")
 runpod.serverless.start({
-    "handler": process_single_image,  # Primary optimized handler
+    "handler": process_single_image,  # Primary enhanced handler
     "health_check": health_check
 })
 
-print("✅ RunPod serverless handler ready for optimized single-image processing!")
+print("✅ RunPod serverless handler ready for personalized image captions!")
+print("🏷️ Features: Tag integration, personalized prompts, children's book context")
